@@ -3,6 +3,7 @@
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl.html).
 
 from openerp import models, fields, api, _
+from openerp.tools.lru import LRU
 
 
 class GeneralLedgerReport(models.TransientModel):
@@ -177,6 +178,7 @@ class GeneralLedgerReportMoveLine(models.TransientModel):
     entry = fields.Char()
     journal = fields.Char()
     account = fields.Char()
+    counterpart_accounts = fields.Char()
     partner = fields.Char()
     label = fields.Char()
     cost_center = fields.Char()
@@ -262,6 +264,9 @@ class GeneralLedgerReportCompute(models.TransientModel):
 
         # Refresh cache because all data are computed with SQL requests
         self.refresh()
+
+        # This one does use the ORM
+        self._compute_counterpart_accounts()
 
     def _get_account_sub_subquery_sum_amounts(self, include_initial_balance):
         """ Return subquery used to compute sum amounts on accounts """
@@ -1174,6 +1179,25 @@ WHERE id = %s
         """
         params = (self.id,) * 3
         self.env.cr.execute(query_update_has_second_currency, params)
+
+    def _compute_counterpart_accounts(self):
+        lines = self.account_ids.mapped('move_line_ids') \
+            + self.account_ids.mapped('partner_ids.move_line_ids')
+        cache = LRU(min(len(lines), 2**10))
+
+        def get_account_codes(mv):
+            try:
+                res = cache[mv.id]
+            except KeyError:
+                res = frozenset(mv.line_ids.mapped('account_id.code'))
+                cache[mv.id] = res
+            return res
+
+        for ln in lines:
+            mv = ln.move_line_id.move_id
+            others = list(get_account_codes(mv) - {ln.account})
+            others.sort()
+            ln.counterpart_accounts = ', '.join(others)
 
     def _get_unaffected_earnings_account_sub_subquery_sum_amounts(
             self, include_initial_balance
